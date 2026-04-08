@@ -1521,7 +1521,7 @@ def page_explainability():
         x=0.02
     ),
     margin=dict(t=56, b=30, l=20, r=110),   # ✅ proper margin
-)gg
+)
 
     fig.update_xaxes(title="Importance Score")   # ✅ separate
     st.divider()
