@@ -730,8 +730,8 @@ def fi_bar(label, value, max_val):
     </div>""", unsafe_allow_html=True)
 
 def breadcrumb(current):
-    steps  = ["Overview","Upload","Insights","EDA","Cleaning","Features","Training","Compare","Explain","Predict"]
-    icons  = ["🍷","📁","🧠","📊","🧹","🎯","🤖","📈","🔍","🎯"]
+    steps  = ["Overview","Upload","Insights","EDA","Cleaning","Features","Training","Compare","Explain","Predict","Metrics","KFold"]
+    icons  = ["🍷","📁","🧠","📊","🧹","🎯","🤖","📈","🔍","🎯","📐","🔁"]
     done_set = {
         "Upload":   st.session_state.df_raw is not None,
         "Insights": st.session_state.df_raw is not None,
@@ -742,6 +742,8 @@ def breadcrumb(current):
         "Compare":  bool(st.session_state.model_results),
         "Explain":  bool(st.session_state.model_results),
         "Predict":  bool(st.session_state.model_results),
+        "Metrics":  bool(st.session_state.model_results),
+        "KFold":    bool(st.session_state.get("kf_results")),
     }
     html = '<div class="breadcrumb">'
     for i, (s, ico) in enumerate(zip(steps, icons)):
@@ -1615,63 +1617,444 @@ def page_prediction():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SIDEBAR
+# PAGE: PERFORMANCE METRICS
 # ══════════════════════════════════════════════════════════════════════════════
 
-PAGES = {
-    "🍷 Overview":         page_overview,
-    "📁 Upload Data":      page_upload,
-    "🧠 Insights":         page_insights,
-    "📊 EDA":              page_eda,
-    "🧹 Data Cleaning":    page_cleaning,
-    "🎯 Feature Selection":page_features,
-    "🤖 Model Training":   page_training,
-    "📈 Model Comparison": page_comparison,
-    "🔍 Explainability":   page_explainability,
-    "🎯 Prediction":       page_prediction,
-}
+def page_performance_metrics():
+    section_header("📐", "Step 10", "Performance Metrics", "Deep-dive into precision, recall, F1, and confusion matrices")
+    breadcrumb("Metrics")
 
-with st.sidebar:
-    st.markdown("""
-    <div class="sidebar-logo">
-        <span class="sidebar-logo-mark">🍷</span>
-        <div class="sidebar-logo-name">Crimson Analytics</div>
-        <div class="sidebar-logo-sub">Wine Quality Intelligence</div>
-    </div>""", unsafe_allow_html=True)
-
-    has_data = st.session_state.df is not None
-    has_feat = bool(st.session_state.features)
-    has_mdl  = bool(st.session_state.model_results)
-
-    st.markdown(f"""
-    <div class="status-panel">
-        <div class="status-panel-title">Pipeline Status</div>
-        <div style="display:flex;flex-direction:column;gap:7px">
-            <span class="badge {'ok' if has_data else 'info'}">{'✓' if has_data else '○'} &nbsp;Dataset loaded</span>
-            <span class="badge {'ok' if has_feat else 'info'}">{'✓' if has_feat else '○'} &nbsp;Features selected</span>
-            <span class="badge {'ok' if has_mdl  else 'info'}">{'✓' if has_mdl  else '○'} &nbsp;Models trained</span>
-        </div>
-    </div>""", unsafe_allow_html=True)
-
-    st.markdown('<div class="nav-group-label">Navigate</div>', unsafe_allow_html=True)
-
-    selected_page = st.radio(
-        "nav",
-        list(PAGES.keys()),
-        label_visibility="collapsed",
-        index=list(PAGES.keys()).index(st.session_state.selected_page)
-              if st.session_state.selected_page in PAGES else 0,
+    from sklearn.metrics import (
+        classification_report, confusion_matrix,
+        precision_score, recall_score, f1_score, roc_auc_score,
+        roc_curve, precision_recall_curve
     )
-    st.session_state.selected_page = selected_page
+    from sklearn.preprocessing import label_binarize
+    from sklearn.model_selection import train_test_split
+    from sklearn.preprocessing import LabelEncoder
 
-    st.markdown("""
-    <div class="sidebar-footer">
-        You guide every step · No auto-decisions
-    </div>""", unsafe_allow_html=True)
+    results = st.session_state.model_results
+    models  = st.session_state.models
+    if not results:
+        st.warning("Train at least one model first.")
+        return
 
+    df           = st.session_state.df
+    features     = st.session_state.get("trained_features", st.session_state.features)
+    target       = st.session_state.target
+    layout       = wine_chart_layout()
+
+    if not features or not target:
+        st.error("Feature selection or target not configured. Return to Training.")
+        return
+
+    X = df[features].select_dtypes(include=np.number).fillna(
+        df[features].select_dtypes(include=np.number).median())
+    y_raw = df[target]
+    le    = None
+    if y_raw.dtype == "object":
+        le = LabelEncoder()
+        y  = le.fit_transform(y_raw)
+    else:
+        y = y_raw.values
+
+    _, X_te, _, y_te = train_test_split(X, y, test_size=0.2, random_state=42)
+
+    model_choice = st.selectbox("Select Model", list(models.keys()))
+    model        = models[model_choice]
+    y_pred       = model.predict(X_te)
+    classes      = np.unique(y)
+    class_labels = [str(c) for c in classes]
+
+    st.divider()
+
+    # ── Top KPI row ──────────────────────────────────────────────────────────
+    avg = "weighted"
+    prec  = precision_score(y_te, y_pred, average=avg, zero_division=0)
+    rec   = recall_score(y_te, y_pred, average=avg, zero_division=0)
+    f1    = f1_score(y_te, y_pred, average=avg, zero_division=0)
+    acc   = (y_te == y_pred).mean()
+
+    k1, k2, k3, k4 = st.columns(4, gap="large")
+    k1.metric("Accuracy",  f"{acc*100:.2f}%",  "overall")
+    k2.metric("Precision", f"{prec*100:.2f}%", "weighted avg")
+    k3.metric("Recall",    f"{rec*100:.2f}%",  "weighted avg")
+    k4.metric("F1 Score",  f"{f1*100:.2f}%",   "weighted avg")
+
+    st.divider()
+
+    # ── Tabs: Confusion Matrix | Per-class Report | ROC Curves ───────────────
+    tab_cm, tab_report, tab_roc, tab_pr = st.tabs(
+        ["Confusion Matrix", "Per-Class Report", "ROC Curves", "Precision–Recall"])
+
+    with tab_cm:
+        cm = confusion_matrix(y_te, y_pred, labels=classes)
+        fig_cm = go.Figure(go.Heatmap(
+            z=cm,
+            x=[f"Pred {c}" for c in class_labels],
+            y=[f"True {c}" for c in class_labels],
+            colorscale=[
+                [0.0, "#080E1A"], [0.3, "#4A0E20"],
+                [0.6, "#7B1E3A"], [0.85, "#C0294E"], [1.0, "#C9A96E"]
+            ],
+            text=cm.astype(str),
+            texttemplate="%{text}",
+            textfont=dict(family="Fira Code", size=12, color="#F8FAFC"),
+            showscale=True,
+        ))
+        fig_cm.update_layout(
+            **layout,
+            height=max(380, len(classes)*45+120),
+            title=dict(text=f"Confusion Matrix — {model_choice}",
+                       font=dict(family="Cormorant Garamond", size=18, color="#F8FAFC"), x=0.02),
+            margin=dict(t=60, b=40, l=80, r=20),
+        )
+        st.plotly_chart(fig_cm, use_container_width=True)
+
+    with tab_report:
+        report_dict = classification_report(
+            y_te, y_pred, labels=classes,
+            target_names=class_labels, output_dict=True, zero_division=0)
+        report_rows = []
+        for cls in class_labels:
+            if cls in report_dict:
+                row = report_dict[cls]
+                report_rows.append({
+                    "Class":     cls,
+                    "Precision": f"{row['precision']:.4f}",
+                    "Recall":    f"{row['recall']:.4f}",
+                    "F1-Score":  f"{row['f1-score']:.4f}",
+                    "Support":   int(row['support']),
+                })
+        for agg in ["macro avg", "weighted avg"]:
+            if agg in report_dict:
+                row = report_dict[agg]
+                report_rows.append({
+                    "Class":     agg,
+                    "Precision": f"{row['precision']:.4f}",
+                    "Recall":    f"{row['recall']:.4f}",
+                    "F1-Score":  f"{row['f1-score']:.4f}",
+                    "Support":   int(row['support']),
+                })
+        st.markdown("""<div style="font-family:'Fira Code',monospace;font-size:0.68rem;letter-spacing:0.14em;
+            text-transform:uppercase;color:#475569;margin-bottom:12px">Classification Report</div>""",
+            unsafe_allow_html=True)
+        st.dataframe(pd.DataFrame(report_rows), use_container_width=True, hide_index=True, height=400)
+
+        # Per-class F1 bar chart
+        cls_f1s    = [float(report_dict[c]["f1-score"]) for c in class_labels if c in report_dict]
+        cls_labels = [c for c in class_labels if c in report_dict]
+        fig_f1 = go.Figure(go.Bar(
+            x=cls_labels, y=[v*100 for v in cls_f1s],
+            marker=dict(
+                color=[f"rgba({int(192-(192-201)*i/max(len(cls_f1s)-1,1))},{int(41+(169-41)*i/max(len(cls_f1s)-1,1))},{int(78+(110-78)*i/max(len(cls_f1s)-1,1))},0.85)"
+                       for i in range(len(cls_f1s))],
+                line=dict(color="#080E1A", width=1)),
+            text=[f"{v*100:.1f}%" for v in cls_f1s],
+            textposition="outside",
+            textfont=dict(color="#F8FAFC", size=11, family="Fira Code"),
+        ))
+        fig_f1.update_layout(
+            **layout, height=360,
+            title=dict(text="F1-Score per Class", font=dict(family="Cormorant Garamond", size=18, color="#F8FAFC"), x=0.02),
+            margin=dict(t=56, b=30, l=20, r=20), showlegend=False, bargap=0.4,
+        )
+        fig_f1.update_yaxes(range=[0, 110], ticksuffix="%")
+        st.plotly_chart(fig_f1, use_container_width=True)
+
+    with tab_roc:
+        if not hasattr(model, "predict_proba"):
+            st.info("ROC curves require a model with probability estimates (not available for SVM without probability=True).")
+        else:
+            y_prob = model.predict_proba(X_te)
+            fig_roc = go.Figure()
+            wine_palette = ["#E11D48","#C9A96E","#7B1E3A","#F43F5E","#FCD34D","#C0294E","#8B6F47"]
+            if len(classes) == 2:
+                fpr, tpr, _ = roc_curve(y_te, y_prob[:, 1])
+                try:
+                    auc_val = roc_auc_score(y_te, y_prob[:, 1])
+                except Exception:
+                    auc_val = float("nan")
+                fig_roc.add_trace(go.Scatter(
+                    x=fpr, y=tpr, mode="lines", name=f"AUC = {auc_val:.3f}",
+                    line=dict(color=wine_palette[0], width=2.5)))
+            else:
+                y_bin = label_binarize(y_te, classes=classes)
+                for i, cls in enumerate(class_labels):
+                    try:
+                        auc_val = roc_auc_score(y_bin[:, i], y_prob[:, i])
+                    except Exception:
+                        auc_val = float("nan")
+                    fpr, tpr, _ = roc_curve(y_bin[:, i], y_prob[:, i])
+                    fig_roc.add_trace(go.Scatter(
+                        x=fpr, y=tpr, mode="lines",
+                        name=f"Class {cls}  AUC={auc_val:.3f}",
+                        line=dict(color=wine_palette[i % len(wine_palette)], width=2)))
+            fig_roc.add_trace(go.Scatter(
+                x=[0,1], y=[0,1], mode="lines",
+                line=dict(color="rgba(255,255,255,0.12)", dash="dot"), showlegend=False))
+            fig_roc.update_layout(
+                **layout, height=480,
+                title=dict(text=f"ROC Curves — {model_choice}",
+                           font=dict(family="Cormorant Garamond", size=18, color="#F8FAFC"), x=0.02),
+                xaxis_title="False Positive Rate", yaxis_title="True Positive Rate",
+                legend=dict(bgcolor="rgba(0,0,0,0)", bordercolor="rgba(255,255,255,0.06)",
+                            font=dict(color="#94A3B8", size=11)),
+                margin=dict(t=60, b=40, l=50, r=20),
+            )
+            st.plotly_chart(fig_roc, use_container_width=True)
+
+    with tab_pr:
+        if not hasattr(model, "predict_proba"):
+            st.info("Precision-Recall curves require probability estimates.")
+        else:
+            y_prob = model.predict_proba(X_te)
+            fig_pr = go.Figure()
+            wine_palette = ["#E11D48","#C9A96E","#7B1E3A","#F43F5E","#FCD34D","#C0294E","#8B6F47"]
+            if len(classes) == 2:
+                prec_c, rec_c, _ = precision_recall_curve(y_te, y_prob[:, 1])
+                fig_pr.add_trace(go.Scatter(
+                    x=rec_c, y=prec_c, mode="lines", name="PR Curve",
+                    line=dict(color=wine_palette[0], width=2.5), fill="tozeroy",
+                    fillcolor="rgba(225,29,72,0.06)"))
+            else:
+                y_bin = label_binarize(y_te, classes=classes)
+                for i, cls in enumerate(class_labels):
+                    prec_c, rec_c, _ = precision_recall_curve(y_bin[:, i], y_prob[:, i])
+                    fig_pr.add_trace(go.Scatter(
+                        x=rec_c, y=prec_c, mode="lines", name=f"Class {cls}",
+                        line=dict(color=wine_palette[i % len(wine_palette)], width=2)))
+            fig_pr.update_layout(
+                **layout, height=480,
+                title=dict(text=f"Precision–Recall Curves — {model_choice}",
+                           font=dict(family="Cormorant Garamond", size=18, color="#F8FAFC"), x=0.02),
+                xaxis_title="Recall", yaxis_title="Precision",
+                legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(color="#94A3B8", size=11)),
+                margin=dict(t=60, b=40, l=50, r=20),
+            )
+            st.plotly_chart(fig_pr, use_container_width=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE: K-FOLD CROSS VALIDATION
+# ══════════════════════════════════════════════════════════════════════════════
+
+def page_kfold():
+    import copy
+
+    section_header("🔁", "Step 11", "K-Fold Cross Validation", "Robust generalisation estimates with stratified folding")
+    breadcrumb("KFold")
+
+    from sklearn.model_selection import StratifiedKFold, cross_validate
+    from sklearn.preprocessing import LabelEncoder
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.svm import SVC
+
+    df       = st.session_state.df
+    features = st.session_state.get("trained_features", st.session_state.features)
+    target   = st.session_state.target
+    layout   = wine_chart_layout()
+
+    if df is None or not features or not target:
+        st.warning("Complete Data Upload → Feature Selection → Training before running K-Fold.")
+        return
+
+    X = df[features].select_dtypes(include=np.number).fillna(
+        df[features].select_dtypes(include=np.number).median())
+    y_raw = df[target]
+
+    if y_raw.dtype == "object":
+        le = LabelEncoder()
+        y  = le.fit_transform(y_raw)
+    else:
+        y  = y_raw.values
+
+    st.divider()
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        k_folds = st.slider("Number of Folds (k)", 3, 15, 5)
+    with col2:
+        scoring_metric = st.selectbox("Scoring Metric",
+            ["accuracy", "f1_weighted", "precision_weighted", "recall_weighted"])
+    with col3:
+        models_to_run = st.multiselect(
+            "Algorithms",
+            ["Logistic Regression", "Random Forest", "SVM"],
+            default=["Logistic Regression", "Random Forest", "SVM"])
+
+    if st.button("🔁 Run K-Fold Validation", use_container_width=True):
+
+        algo_map = {
+            "Logistic Regression": LogisticRegression(max_iter=1000, random_state=42),
+            "Random Forest": RandomForestClassifier(n_estimators=100, random_state=42),
+            "SVM": SVC(probability=True, random_state=42),
+        }
+
+        cv = StratifiedKFold(n_splits=k_folds, shuffle=True, random_state=42)
+        kf_results = {}
+
+        for name in models_to_run:
+            cv_out = cross_validate(
+                algo_map[name], X, y, cv=cv,
+                scoring=scoring_metric, return_train_score=True)
+
+            kf_results[name] = {
+                "test_scores": cv_out["test_score"],
+                "train_scores": cv_out["train_score"],
+                "mean_test": cv_out["test_score"].mean(),
+                "std_test": cv_out["test_score"].std(),
+                "mean_train": cv_out["train_score"].mean(),
+                "std_train": cv_out["train_score"].std(),
+            }
+
+        st.session_state["kf_results"] = kf_results
+        st.session_state["kf_folds"] = k_folds
+        st.session_state["kf_scoring"] = scoring_metric
+
+    kf_results = st.session_state.get("kf_results", {})
+    if not kf_results:
+        return
+
+    k_folds = st.session_state["kf_folds"]
+    scoring_metric = st.session_state["kf_scoring"]
+
+    kf_names = list(kf_results.keys())
+    wine_palette = ["#E11D48","#C9A96E","#7B1E3A","#F43F5E","#FCD34D","#C0294E","#8B6F47"]
+
+    tab_box, tab_fold, tab_compare, tab_overfit = st.tabs(
+        ["Score Distribution", "Per-Fold Breakdown", "Model Comparison", "Overfitting Radar"]
+    )
+
+    # ================= BOX =================
+    with tab_box:
+        fig_box = go.Figure()
+
+        for i, name in enumerate(kf_names):
+            fig_box.add_trace(go.Box(
+                y=kf_results[name]["test_scores"] * 100,
+                name=name,
+                marker=dict(color=wine_palette[i % len(wine_palette)])
+            ))
+
+        layout_local = copy.deepcopy(layout)
+        layout_local.pop("yaxis", None)
+
+        fig_box.update_layout(
+            **layout_local,
+            height=440,
+            yaxis=dict(title=f"{scoring_metric} (%)", ticksuffix="%")
+        )
+
+        st.plotly_chart(fig_box, use_container_width=True)
+
+    # ================= PER FOLD =================
+    with tab_fold:
+        fig_fold = go.Figure()
+        folds = [f"Fold {i+1}" for i in range(k_folds)]
+
+        for i, name in enumerate(kf_names):
+            fig_fold.add_trace(go.Scatter(
+                x=folds,
+                y=kf_results[name]["test_scores"] * 100,
+                mode="lines+markers",
+                name=name
+            ))
+
+        layout_local = copy.deepcopy(layout)
+        layout_local.pop("yaxis", None)
+
+        fig_fold.update_layout(
+            **layout_local,
+            height=420,
+            yaxis=dict(title=f"{scoring_metric} (%)", ticksuffix="%")
+        )
+
+        st.plotly_chart(fig_fold, use_container_width=True)
+
+        # table
+        df_rows = {"Fold": folds}
+        for name in kf_names:
+            df_rows[name] = [f"{v*100:.2f}" for v in kf_results[name]["test_scores"]]
+
+        st.dataframe(pd.DataFrame(df_rows), use_container_width=True)
+
+    # ================= COMPARE =================
+    with tab_compare:
+        fig_cmp = go.Figure()
+
+        for name in kf_names:
+            fig_cmp.add_trace(go.Bar(
+                name=name,
+                x=["Test", "Train"],
+                y=[
+                    kf_results[name]["mean_test"] * 100,
+                    kf_results[name]["mean_train"] * 100
+                ]
+            ))
+
+        layout_local = copy.deepcopy(layout)
+        layout_local.pop("yaxis", None)
+
+        fig_cmp.update_layout(
+            **layout_local,
+            barmode="group",
+            height=440,
+            yaxis=dict(title=f"{scoring_metric} (%)", ticksuffix="%")
+        )
+
+        st.plotly_chart(fig_cmp, use_container_width=True)
+
+    # ================= RADAR =================
+    with tab_overfit:
+        fig = go.Figure()
+
+        for name in kf_names:
+            r = kf_results[name]
+            vals = [
+                r["mean_test"],
+                1 - r["std_test"],
+                1 - abs(r["mean_train"] - r["mean_test"])
+            ]
+
+            fig.add_trace(go.Scatterpolar(
+                r=vals + [vals[0]],
+                theta=["Score", "Consistency", "Overfit", "Score"],
+                fill="toself",
+                name=name
+            ))
+
+        fig.update_layout(
+            polar=dict(radialaxis=dict(visible=True, range=[0,1])),
+            height=450
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # RENDER
 # ══════════════════════════════════════════════════════════════════════════════
+PAGES = {
+    "🍷 Overview": page_overview,
+    "📁 Upload": page_upload,
+    "🧠 Insights": page_insights,
+    "📊 EDA": page_eda,
+    "🧹 Cleaning": page_cleaning,
+    "🎯 Features": page_features,
+    "🤖 Training": page_training,
+    "📈 Compare": page_comparison,
+    "🔍 Explain": page_explainability,
+    "🎯 Predict": page_prediction,
+    "📐 Metrics": page_performance_metrics,
+    "🔁 KFold": page_kfold,
+}
+selected_page = st.sidebar.radio(
+    "Navigation",
+    list(PAGES.keys()),
+    index=list(PAGES.keys()).index(st.session_state.selected_page)
+)
 
+# update session state
+st.session_state.selected_page = selected_page
 PAGES[selected_page]()
